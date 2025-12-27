@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import os
+import json
+from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
@@ -12,6 +15,9 @@ from telegram.ext import (
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SITE_URL = os.getenv("SITE_URL", "https://designeryas.com")
+ADMIN_ID = 990167242  # آیدی ادمین
+USERS_FILE = "users.json"  # فایل ذخیره کاربران
+
 if not TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
 
@@ -21,7 +27,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
+# حالات مختلف ربات
 MAIN, SUB, ASK_PHONE, ASK_NAME, ASK_COLLAB_NAME, ASK_COLLAB_TIME = range(6)
+ADMIN_BROADCAST_TEXT = 100  # حالت دریافت متن پیام همگانی
 
 MAIN_OPTS = [
     ("طراحی سایت", "main_web"),
@@ -41,6 +49,45 @@ SUB_OPTS = {
     "main_admin": [("اینستا", "sub_admin_instagram"), ("سایر", "sub_admin_other")],
 }
 
+# ========== توابع کمکی برای مدیریت کاربران ==========
+
+def load_users():
+    """بارگذاری لیست کاربران از فایل JSON"""
+    if Path(USERS_FILE).exists():
+        try:
+            with open(USERS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_users(users):
+    """ذخیره لیست کاربران در فایل JSON"""
+    with open(USERS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def add_user(user_id, username=None, first_name=None):
+    """اضافه کردن کاربر جدید"""
+    users = load_users()
+    user_id_str = str(user_id)
+    if user_id_str not in users:
+        users[user_id_str] = {
+            "id": user_id,
+            "username": username,
+            "first_name": first_name,
+            "joined_at": datetime.now().isoformat()
+        }
+        save_users(users)
+        logger.info(f"✅ کاربر جدید اضافه شد: {user_id} ({first_name})")
+    return users
+
+def get_all_user_ids():
+    """دریافت لیست تمام آیدی کاربران"""
+    users = load_users()
+    return [int(uid) for uid in users.keys()]
+
+# ========== توابع رابط کاربری ==========
+
 def rows_of_buttons(pairs, cols=2, extra=None):
     rows = []
     for i in range(0, len(pairs), cols):
@@ -51,6 +98,14 @@ def rows_of_buttons(pairs, cols=2, extra=None):
     return InlineKeyboardMarkup(rows)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور /start - شروع ربات"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    
+    # اضافه کردن کاربر به لیست
+    add_user(user_id, username, first_name)
+    
     context.user_data.clear()
     kb = rows_of_buttons(MAIN_OPTS)
     if update.message:
@@ -58,6 +113,105 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.edit_message_text("سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", reply_markup=kb)
     return MAIN
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور /admin - نمایش پنل مدیریت (فقط برای ادمین)"""
+    user_id = update.effective_user.id
+    
+    # بررسی اینکه آیا کاربر ادمین است
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ شما دسترسی به این قابلیت ندارید.")
+        return ConversationHandler.END
+    
+    # نمایش منوی ادمین
+    admin_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 تعداد کاربران", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔄 بازگشت", callback_data="admin_back")],
+    ])
+    await update.message.reply_text("🔐 پنل مدیریت:\n\nچه کاری می‌خواهید انجام دهید؟", reply_markup=admin_kb)
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت دکمه‌های پنل ادمین"""
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await q.edit_message_text("❌ شما دسترسی ندارید.")
+        return ConversationHandler.END
+    
+    if q.data == "admin_broadcast":
+        await q.edit_message_text(
+            "📢 متن پیام همگانی را وارد کنید:\n\n"
+            "(می‌توانید از Markdown استفاده کنید: **بولد** و *ایتالیک*)"
+        )
+        return ADMIN_BROADCAST_TEXT
+    
+    elif q.data == "admin_stats":
+        users = load_users()
+        count = len(users)
+        await q.edit_message_text(
+            f"📊 آمار کاربران:\n\n"
+            f"👥 تعداد کل کاربران: {count}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ بازگشت", callback_data="admin_back")]])
+        )
+        return ConversationHandler.END
+    
+    elif q.data == "admin_back":
+        kb = rows_of_buttons(MAIN_OPTS)
+        await q.edit_message_text("سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", reply_markup=kb)
+        return MAIN
+    
+    return ConversationHandler.END
+
+async def admin_broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت متن پیام همگانی و ارسال آن"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ شما دسترسی ندارید.")
+        return ConversationHandler.END
+    
+    message_text = update.message.text
+    user_ids = get_all_user_ids()
+    
+    if not user_ids:
+        await update.message.reply_text("❌ هیچ کاربری برای ارسال پیام وجود ندارد.")
+        return ConversationHandler.END
+    
+    # ارسال پیام به تمام کاربران
+    success_count = 0
+    failed_count = 0
+    
+    await update.message.reply_text(f"⏳ در حال ارسال پیام به {len(user_ids)} کاربر...")
+    
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=message_text,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            success_count += 1
+        except Exception as e:
+            logger.warning(f"⚠️ خطا در ارسال به {uid}: {str(e)}")
+            failed_count += 1
+    
+    # گزارش نتیجه
+    report = (
+        f"✅ پیام همگانی ارسال شد!\n\n"
+        f"✔️ موفق: {success_count}\n"
+        f"❌ ناموفق: {failed_count}\n"
+        f"📊 کل: {len(user_ids)}"
+    )
+    await update.message.reply_text(report)
+    
+    logger.info(f"📢 پیام همگانی ارسال شد: {success_count} موفق، {failed_count} ناموفق")
+    
+    return ConversationHandler.END
+
+# ========== توابع فرم درخواست خدمات ==========
 
 async def on_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -87,14 +241,11 @@ async def on_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["service"] = next(
         (t for pairs in SUB_OPTS.values() for (t, d) in pairs if d == data), data
     )
-    # We use a ReplyKeyboardMarkup for the contact button
     contact_kb = ReplyKeyboardMarkup(
         [[KeyboardButton("📲 ارسال شماره موبایل", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    # Since we can't attach ReplyKeyboardMarkup to an edit_message_text (which is for Inline),
-    # we send a new message or just inform the user.
     await q.delete_message()
     await context.bot.send_message(
         chat_id=q.message.chat_id,
@@ -128,6 +279,9 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = context.user_data.get("category", "-")
     svc = context.user_data.get("service", "-")
     phone = context.user_data.get("phone", "-")
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "ندارد"
+    
     txt = ("درخواست شما ثبت شد ✅\n"
            "به زودی با شما تماس می‌گیریم.\n\n"
            f"**دسته:** {cat}\n**خدمت:** {svc}\n**نام:** {name}\n**شماره:** {phone}")
@@ -135,6 +289,23 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt, parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 وب‌سایت ما", url=SITE_URL)]])
     )
+    
+    # ارسال گزارش به ادمین
+    admin_report = (
+        f"📋 درخواست جدید دریافت شد!\n\n"
+        f"👤 نام: {name}\n"
+        f"📱 شماره: {phone}\n"
+        f"🔗 یوزرنیم: @{username}\n"
+        f"🆔 آیدی: {user_id}\n"
+        f"📂 دسته: {cat}\n"
+        f"🎯 خدمت: {svc}\n"
+        f"⏰ زمان: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_report, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"خطا در ارسال گزارش به ادمین: {e}")
+    
     kb = rows_of_buttons(MAIN_OPTS)
     await update.message.reply_text("می‌تونی درخواست جدید ثبت کنی:", reply_markup=kb)
     context.user_data.clear()
@@ -173,6 +344,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def async_main() -> None:
     application: Application = ApplicationBuilder().token(TOKEN).build()
+    
+    # ConversationHandler برای فرم درخواست خدمات
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -182,12 +355,29 @@ async def async_main() -> None:
             ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
             ASK_COLLAB_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, collab_name)],
             ASK_COLLAB_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, collab_time)],
+            ADMIN_BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_text)],
         },
         fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(on_back, pattern=r"^back_to_main$")],
         name="lead-flow-inline",
         persistent=False,
     )
+    
+    # ConversationHandler برای پنل ادمین
+    admin_conv = ConversationHandler(
+        entry_points=[CommandHandler("admin", admin_panel)],
+        states={
+            ConversationHandler.END: [CallbackQueryHandler(admin_callback, pattern=r"^admin_")],
+            ADMIN_BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_text)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        name="admin-panel",
+        persistent=False,
+    )
+    
     application.add_handler(conv)
+    application.add_handler(admin_conv)
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin_"))
+    
     logging.info("🤖 Bot is starting (polling)...")
     await application.initialize()
     await application.start()
