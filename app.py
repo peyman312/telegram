@@ -28,16 +28,20 @@ logging.basicConfig(
 logger = logging.getLogger("bot")
 
 # حالات مختلف ربات
-MAIN, SUB, ASK_PHONE, ASK_NAME, ASK_COLLAB_NAME, ASK_COLLAB_TIME = range(6)
+MAIN, SUB, ASK_PHONE, ASK_NAME, ASK_COLLAB_NAME, ASK_COLLAB_TIME, ASK_OTHER_SERVICE_DESC = range(7)
 ADMIN_BROADCAST_TEXT = 100  # حالت دریافت متن پیام همگانی
 
+# منوی اصلی (Inline Keyboard)
 MAIN_OPTS = [
     ("طراحی سایت", "main_web"),
     ("تبلیغات هدفمند", "main_ads"),
     ("طراحی لوگو", "main_logo"),
     ("ادمین شبکه‌های اجتماعی", "main_admin"),
     ("انجام میدم (همکار)", "main_collab"),
+    ("سایر خدمات", "main_other"), # گزینه جدید
 ]
+
+# زیرمنوها
 SUB_OPTS = {
     "main_web": [
         ("درخواست سایت خدماتی", "sub_web_service"),
@@ -47,6 +51,10 @@ SUB_OPTS = {
     "main_ads": [("تبلیغات گوگل ادز", "sub_ads_google"), ("سایر", "sub_ads_other")],
     "main_logo": [("لوگو تلفیقی", "sub_logo_combo"), ("لوگو تایپی", "sub_logo_typo"), ("لوگو نماد", "sub_logo_icon")],
     "main_admin": [("اینستا", "sub_admin_instagram"), ("سایر", "sub_admin_other")],
+    "main_other": [ # زیرمنوی جدید
+        ("ساخت ربات تلگرام", "sub_other_bot"),
+        ("سایر خدمات متفرقه", "sub_other_misc"),
+    ],
 }
 
 # ========== توابع کمکی برای مدیریت کاربران ==========
@@ -97,6 +105,13 @@ def rows_of_buttons(pairs, cols=2, extra=None):
         rows.append(extra)
     return InlineKeyboardMarkup(rows)
 
+# دکمه منوی اصلی (Reply Keyboard)
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("🏠 منوی اصلی")]],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور /start - شروع ربات"""
     user_id = update.effective_user.id
@@ -108,10 +123,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data.clear()
     kb = rows_of_buttons(MAIN_OPTS)
+    
+    # اگر پیام از طریق دکمه منوی اصلی یا دستور /start آمد
     if update.message:
-        await update.message.reply_text("سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", reply_markup=kb)
+        await update.message.reply_text(
+            "سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", 
+            reply_markup=kb
+        )
+        # ارسال Reply Keyboard برای منوی دکمه‌ای
+        await update.message.reply_text(
+            "برای دسترسی سریع به منوی اصلی، از دکمه زیر استفاده کنید:",
+            reply_markup=MAIN_MENU_KEYBOARD
+        )
+    # اگر از طریق Callback Query (مثلاً بازگشت از زیرمنو) آمد
     else:
-        await update.callback_query.edit_message_text("سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", reply_markup=kb)
+        await update.callback_query.edit_message_text(
+            "سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", 
+            reply_markup=kb
+        )
     return MAIN
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,7 +156,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 تعداد کاربران", callback_data="admin_stats")],
-        [InlineKeyboardButton("🔄 بازگشت", callback_data="admin_back")],
+        [InlineKeyboardButton("🔄 بازگشت به منوی اصلی", callback_data="admin_back")],
     ])
     await update.message.reply_text("🔐 پنل مدیریت:\n\nچه کاری می‌خواهید انجام دهید؟", reply_markup=admin_kb)
 
@@ -159,9 +188,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     elif q.data == "admin_back":
-        kb = rows_of_buttons(MAIN_OPTS)
-        await q.edit_message_text("سلام 👋 یکی از گزینه‌ها را انتخاب کنید:", reply_markup=kb)
-        return MAIN
+        return await start(update, context)
     
     return ConversationHandler.END
 
@@ -217,13 +244,24 @@ async def on_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+    
     if data == "main_collab":
         context.user_data["category"] = "انجام میدم (همکار)"
         await q.edit_message_text("🧩 نام پروژه را وارد کنید:", reply_markup=None)
         return ASK_COLLAB_NAME
+    
     context.user_data["category"] = next((t for t, d in MAIN_OPTS if d == data), data)
     subs = SUB_OPTS.get(data, [])
-    kb = rows_of_buttons(subs, cols=2, extra=[InlineKeyboardButton("⬅️ بازگشت", callback_data="back_to_main")])
+    
+    extra_buttons = [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_to_main")]
+    
+    # افزودن دکمه قیمت برای طراحی سایت
+    if data == "main_web":
+        extra_buttons.insert(0, InlineKeyboardButton("💰 قیمت‌ها", url="https://designeryas.com/services/%d8%ae%d8%af%d9%85%d8%a7%d8%aa-%d8%b7%d8%b1%d8%a7%d8%ad%db%8c-%d8%b3%d8%a7%db%8c%d8%aa/"))
+        kb = rows_of_buttons(subs, cols=2, extra=extra_buttons)
+    else:
+        kb = rows_of_buttons(subs, cols=2, extra=[extra_buttons[1]]) # فقط بازگشت
+        
     await q.edit_message_text(f"✅ انتخاب شد: {context.user_data['category']}\nیکی از زیرگزینه‌ها را انتخاب کنید:", reply_markup=kb)
     return SUB
 
@@ -236,11 +274,25 @@ async def on_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+    
     if data == "back_to_main":
         return await start(update, context)
+    
     context.user_data["service"] = next(
         (t for pairs in SUB_OPTS.values() for (t, d) in pairs if d == data), data
     )
+    
+    # اگر زیرمجموعه "سایر خدمات متفرقه" باشد، باید توضیحات را بپرسیم
+    if data == "sub_other_misc" or data == "sub_other_bot":
+        await q.delete_message()
+        await context.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="📝 لطفاً توضیحات کامل خدمات مد نظر خود را بنویسید:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ASK_OTHER_SERVICE_DESC
+    
+    # در غیر این صورت، روال عادی درخواست شماره را ادامه می‌دهیم
     contact_kb = ReplyKeyboardMarkup(
         [[KeyboardButton("📲 ارسال شماره موبایل", request_contact=True)]],
         resize_keyboard=True,
@@ -250,6 +302,26 @@ async def on_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=q.message.chat_id,
         text="📱 لطفا با استفاده از دکمه زیر شماره خود را ارسال کنید یا آن را تایپ کنید:",
+        reply_markup=contact_kb
+    )
+    return ASK_PHONE
+
+async def ask_other_service_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت توضیحات خدمات متفرقه و سپس درخواست شماره"""
+    desc = (update.message.text or "").strip()
+    if len(desc) < 10:
+        await update.message.reply_text("توضیحات شما خیلی کوتاه است. لطفاً جزئیات بیشتری بنویسید:")
+        return ASK_OTHER_SERVICE_DESC
+    
+    context.user_data["description"] = desc
+    
+    contact_kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("📲 ارسال شماره موبایل", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await update.message.reply_text(
+        "✅ توضیحات ثبت شد.\n📱 حالا لطفا با استفاده از دکمه زیر شماره خود را ارسال کنید یا آن را تایپ کنید:",
         reply_markup=contact_kb
     )
     return ASK_PHONE
@@ -279,12 +351,17 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = context.user_data.get("category", "-")
     svc = context.user_data.get("service", "-")
     phone = context.user_data.get("phone", "-")
+    desc = context.user_data.get("description", "ندارد") # توضیحات جدید
     user_id = update.effective_user.id
     username = update.effective_user.username or "ندارد"
     
     txt = ("درخواست شما ثبت شد ✅\n"
            "به زودی با شما تماس می‌گیریم.\n\n"
            f"**دسته:** {cat}\n**خدمت:** {svc}\n**نام:** {name}\n**شماره:** {phone}")
+    
+    if desc != "ندارد":
+        txt += f"\n**توضیحات:** {desc}"
+        
     await update.message.reply_text(
         txt, parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 وب‌سایت ما", url=SITE_URL)]])
@@ -299,6 +376,7 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 آیدی: {user_id}\n"
         f"📂 دسته: {cat}\n"
         f"🎯 خدمت: {svc}\n"
+        f"📝 توضیحات: {desc}\n"
         f"⏰ زمان: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     try:
@@ -347,10 +425,11 @@ async def async_main() -> None:
     
     # ConversationHandler برای فرم درخواست خدمات
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("start", start), MessageHandler(filters.Regex("🏠 منوی اصلی"), start)],
         states={
             MAIN: [CallbackQueryHandler(on_main, pattern=r"^main_")],
             SUB: [CallbackQueryHandler(on_sub, pattern=r"^sub_"), CallbackQueryHandler(on_back, pattern=r"^back_to_main$")],
+            ASK_OTHER_SERVICE_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_other_service_desc)], # حالت جدید
             ASK_PHONE: [MessageHandler((filters.TEXT | filters.CONTACT) & ~filters.COMMAND, ask_phone)],
             ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
             ASK_COLLAB_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, collab_name)],
@@ -377,6 +456,7 @@ async def async_main() -> None:
     application.add_handler(conv)
     application.add_handler(admin_conv)
     application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin_"))
+    application.add_handler(CommandHandler("start", start)) # برای اطمینان از اینکه /start همیشه کار کند
     
     logging.info("🤖 Bot is starting (polling)...")
     await application.initialize()
